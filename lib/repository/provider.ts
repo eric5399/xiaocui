@@ -23,8 +23,8 @@ function configuredProvider(): ExperienceDataProvider {
 
 function supabaseConfig() {
   const url = process.env.NEXT_PUBLIC_SUPABASE_URL?.trim();
-  const serviceRoleKey = process.env.SUPABASE_SERVICE_ROLE_KEY?.trim();
-  return { url, serviceRoleKey, complete: Boolean(url && serviceRoleKey) };
+  const anonKey = process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY?.trim();
+  return { url, anonKey, complete: Boolean(url && anonKey) };
 }
 
 export function getDataProviderStatus(): DataProviderStatus {
@@ -45,7 +45,8 @@ function createRepository(): ExperienceRepository {
   const provider = configuredProvider();
   if (provider === "mock") return new MockExperienceStore();
 
-  const { url, serviceRoleKey, complete } = supabaseConfig();
+  const { url, complete } = supabaseConfig();
+  const serviceRoleKey = process.env.SUPABASE_SERVICE_ROLE_KEY?.trim();
   if (!complete || !url || !serviceRoleKey) {
     throw new Error(
       "Supabase 模式未配置完整：请设置 NEXT_PUBLIC_SUPABASE_URL 与 SUPABASE_SERVICE_ROLE_KEY；普通 API 还需要 NEXT_PUBLIC_SUPABASE_ANON_KEY；或将 EXPERIENCE_DATA_PROVIDER 设为 mock。",

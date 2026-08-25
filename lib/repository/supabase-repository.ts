@@ -17,6 +17,7 @@ import type {
   InterviewExtractionState,
   InterviewStatus,
   InterviewSummary,
+  InstitutionCode,
   JsonObject,
   JsonValue,
   Message,
@@ -33,7 +34,7 @@ import type {
   ExtractedCaseDraft,
   GeneratedChallengeCase,
 } from "@/lib/agents/contracts";
-import type { ExperienceRepository, InterviewFilters } from "./experience-repository";
+import type { ExperienceRepository, InterviewFilters, SaveCaseReviewInput } from "./experience-repository";
 
 type DbRecord = Record<string, unknown>;
 type DbResult<T> = { data: T | null; error: { message: string; code?: string } | null };
@@ -95,6 +96,7 @@ function toScenario(row: unknown): Scenario {
   const template = jsonObject(item.case_template, "case_template");
   return {
     id: stringValue(item, "id")!,
+    institutionCode: stringValue(item, "institution_code", true) as InstitutionCode | null,
     name: stringValue(item, "name")!,
     topic: stringValue(item, "topic")!,
     background: stringValue(item, "background")!,
@@ -308,6 +310,7 @@ export class SupabaseExperienceRepository implements ExperienceRepository {
     }
     const scenario = toScenario(await this.one(this.client.from("scenarios").insert({
       organization_id: this.context.organizationId,
+      institution_code: input.institutionCode ?? null,
       name: input.name, topic: input.topic, background: input.background, objective: input.objective,
       agent_prompt: input.agentPrompt, keywords: input.keywords, output_schema: input.outputSchema ?? {},
       case_template: input.caseTemplate, status: "draft",
@@ -533,6 +536,40 @@ export class SupabaseExperienceRepository implements ExperienceRepository {
     }
     const interview = toInterview(await this.one(this.client.from("interviews").update({ status: "completed", completed_at: new Date().toISOString() }).eq("id", interviewId).select("*").single()));
     return { interview, extractedCase, experienceRule };
+  }
+
+  async saveCaseReview(interviewId: string, input: SaveCaseReviewInput): Promise<CompleteInterviewResult | undefined> {
+    const detail = await this.getInterviewDetail(interviewId);
+    if (!detail?.extractedCase || !detail.experienceRules[0] || detail.status !== "completed") return undefined;
+
+    if (input.correctionMessage) {
+      const existing = input.correctionMessage.clientMessageId
+        ? await this.findMessageByClientMessageId(interviewId, input.correctionMessage.clientMessageId)
+        : undefined;
+      if (!existing) {
+        await this.one(this.client.from("messages").insert({
+          interview_id: interviewId,
+          role: "user",
+          message_type: "text",
+          content: input.correctionMessage.content,
+          metadata: {
+            source: "case_correction",
+            changedFields: input.correctionMessage.changedFields,
+            clientMessageId: input.correctionMessage.clientMessageId ?? null,
+          },
+          client_message_id: input.correctionMessage.clientMessageId ?? null,
+        }).select("*").single());
+      }
+    }
+
+    const extractedCase = input.extractedDraft
+      ? toExtractedCase(await this.one(this.client.from("extracted_cases").update(input.extractedDraft).eq("id", detail.extractedCase.id).select("*").single()))
+      : detail.extractedCase;
+    const experienceRule = input.ruleDraft
+      ? toRule(await this.one(this.client.from("experience_rules").update(input.ruleDraft).eq("id", detail.experienceRules[0].id).select("*").single()))
+      : detail.experienceRules[0];
+    const interview = await this.updateInterviewState(interviewId, input.extractionState);
+    return interview ? { interview, extractedCase, experienceRule } : undefined;
   }
 
   async getFusionCaseInputs(interviewIds: string[]) {

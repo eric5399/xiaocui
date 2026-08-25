@@ -561,7 +561,8 @@
 }
 
 .admin-input[aria-invalid="true"],
-.admin-textarea[aria-invalid="true"] {
+.admin-textarea[aria-invalid="true"],
+.admin-select[aria-invalid="true"] {
   border-color: var(--admin-ink);
   background: var(--admin-soft-navy);
 }
@@ -1099,7 +1100,7 @@
   border-radius: 12px;
   background: var(--admin-white);
   display: grid;
-  grid-template-columns: minmax(260px, 1fr) 170px auto;
+  grid-template-columns: minmax(240px, 1fr) 220px 170px auto;
   align-items: center;
   gap: 10px;
 }
@@ -3977,6 +3978,58 @@
     align-items: flex-start;
     flex-direction: column;
   }
+}
+
+/* Desktop readability pass: enlarge working text without changing mobile layout. */
+@media (min-width: 901px) {
+  .admin-shell { font-size: 16px; line-height: 1.62; }
+  .admin-brand small, .admin-mode-card small, .admin-user small { font-size: 12px; }
+  .admin-mode-card strong, .admin-user strong { font-size: 13px; }
+  .admin-nav__label { font-size: 12px; }
+  .admin-nav a { font-size: 15px; }
+  .admin-nav a span { font-size: 11px; }
+  .admin-eyebrow { font-size: 12px; }
+  .admin-page-description { font-size: 16px; }
+  .admin-button { font-size: 14px; min-height: 44px; }
+  .admin-card__header h2, .admin-section-heading h2 { font-size: 19px; }
+  .admin-card__header p, .admin-section-heading p { font-size: 14px; }
+  .admin-status { font-size: 12px; min-height: 26px; }
+  .admin-demo-notice strong { font-size: 13px; }
+  .admin-demo-notice p, .admin-empty-state p { font-size: 14px; }
+  .admin-empty-state h2 { font-size: 20px; }
+  .admin-field label, .admin-field__label { font-size: 14px; }
+  .admin-field__hint { font-size: 13px; }
+  .admin-input, .admin-textarea, .admin-select, .admin-search-field input { font-size: 16px; min-height: 48px; }
+  .admin-checkbox strong, .admin-radio strong { font-size: 14px; }
+  .admin-checkbox small, .admin-radio small { font-size: 13px; }
+  .admin-chip { font-size: 13px; min-height: 30px; }
+  .admin-kicker { font-size: 12px; }
+  .admin-meta-list dt { font-size: 13px; }
+  .admin-meta-list dd { font-size: 15px; }
+  .admin-table th { font-size: 12px; }
+  .admin-table td { font-size: 14px; }
+  .admin-table td small, .admin-list-toolbar__count { font-size: 13px; }
+  .admin-scenario-row__title p, .admin-scenario-row__progress small, .admin-scenario-row__state small { font-size: 13px; }
+  .admin-stat-card { min-height: 164px; }
+  .admin-stat-card > strong { margin-top: 0; font-size: 40px; }
+  .admin-stat-card h2 { font-size: 15px; }
+  .admin-stat-card p { font-size: 13px; }
+  .admin-wizard-topbar h1 { font-size: clamp(34px, 3vw, 44px); }
+  .admin-back-link { font-size: 13px; }
+  .admin-wizard-steps > button { min-height: 78px; grid-template-columns: 30px minmax(0, 1fr); }
+  .admin-wizard-steps > button > span { width: 30px; height: 30px; font-size: 11px; }
+  .admin-wizard-steps > button strong { font-size: 15px; }
+  .admin-wizard-steps > button small { margin-top: 4px; font-size: 12px; line-height: 1.45; }
+  .admin-wizard-steps__note strong { font-size: 13px; }
+  .admin-wizard-steps__note p { font-size: 12px; line-height: 1.55; }
+  .admin-wizard-form__head { min-height: 112px; padding: 24px 30px; }
+  .admin-wizard-form__head > span, .admin-wizard-form__head > strong { font-size: 12px; }
+  .admin-wizard-form__head h2 { font-size: 23px; line-height: 1.25; }
+  .admin-wizard-form__head p { margin-top: 5px; font-size: 14px; line-height: 1.5; }
+  .admin-wizard-form__body { padding: 34px; }
+  .admin-form-section { gap: 28px; }
+  .admin-wizard-form .admin-field label, .admin-wizard-form .admin-fieldset legend { font-size: 15px; }
+  .admin-wizard-form .admin-field__hint, .admin-wizard-form .admin-fieldset > p { font-size: 13px; line-height: 1.55; }
 }
 
 @media print {

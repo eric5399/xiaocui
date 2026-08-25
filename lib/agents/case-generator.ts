@@ -79,6 +79,92 @@ const extractedCaseSchema = z.object({
   result: z.string().trim().min(1).max(5000), limitation: z.string().trim().min(1).max(5000),
 });
 
+const correctedCaseSchema = z.object({
+  revisedCase: extractedCaseSchema,
+  changedFields: z.array(z.enum(["title", "summary", "background", "discovery", "judgement", "action", "result", "limitation"])).min(1),
+});
+
+function reviseCaseDeterministically(
+  current: ExtractedCaseDraft,
+  correction: string,
+): { draft: ExtractedCaseDraft; changedFields: string[]; diagnostics: null } {
+  const revised = { ...current };
+  const changedFields = new Set<string>();
+  const setField = (field: keyof ExtractedCaseDraft) => {
+    revised[field] = correction;
+    changedFields.add(field);
+  };
+
+  if (/(怎么做|动作|步骤|先|调整|沟通|回访)/.test(correction)) setField("action");
+  else if (/(结果|效果|提升|下降|恢复|改善|百分点)/.test(correction)) setField("result");
+  else if (/(不适用|边界|失效|例外|前提|风险)/.test(correction)) setField("limitation");
+  else if (/(发现|信号|数据|异常|场景|问题)/.test(correction)) setField("discovery");
+  else setField("judgement");
+
+  revised.summary = `${revised.judgement.replace(/[。；;]+$/, "")}；${revised.action}`.slice(0, 1000);
+  changedFields.add("summary");
+  return { draft: revised, changedFields: [...changedFields], diagnostics: null };
+}
+
+/** Case review is a derived-asset revision; it never rewrites interview messages. */
+export async function reviseExtractedCaseWithGateway(input: {
+  current: ExtractedCaseDraft;
+  correction: string;
+  messages: Array<{ role: string; content: string }>;
+}): Promise<{
+  draft: ExtractedCaseDraft;
+  changedFields: string[];
+  diagnostics: { provider: string; model: string; latencyMs: number; inputTokens: number; outputTokens: number } | null;
+}> {
+  let gateway;
+  try {
+    gateway = createConfiguredLlmGateway();
+  } catch {
+    return reviseCaseDeterministically(input.current, input.correction);
+  }
+  if (gateway.getProviderName() === "mock") {
+    return reviseCaseDeterministically(input.current, input.correction);
+  }
+  try {
+    const { data, response } = await gateway.generateStructured(correctedCaseSchema, {
+      messages: [
+        {
+          role: "system",
+          content: "你负责根据受访者的纠错修订已生成的经验案例。用户纠错是修订依据；只修改受影响字段，其他字段必须保留。summary 必须同步，不得删减字段、不得杜撰。只输出 JSON。",
+        },
+        {
+          role: "user",
+          content: JSON.stringify({
+            currentCase: input.current,
+            correction: input.correction,
+            sourceMessages: input.messages.slice(-20).map((message) => ({
+              role: message.role,
+              content: message.content.slice(0, 1500),
+            })),
+          }),
+        },
+      ],
+      temperature: Number(process.env.LLM_TEMPERATURE ?? 0.2),
+      maxTokens: 1800,
+    });
+    return {
+      draft: data.revisedCase,
+      changedFields: [...new Set([...data.changedFields, "summary"])],
+      diagnostics: {
+        provider: response.provider,
+        model: response.model,
+        latencyMs: response.latencyMs,
+        inputTokens: response.usage.inputTokens,
+        outputTokens: response.usage.outputTokens,
+      },
+    };
+  } catch {
+    // A correction should remain usable during an LLM outage. The deterministic
+    // fallback changes one evidence field plus summary and preserves all others.
+    return reviseCaseDeterministically(input.current, input.correction);
+  }
+}
+
 export async function generateExtractedCaseWithGateway(input: { challengeTitle: string; challengeDescription: string; extractionState: unknown; messages: Array<{ role: string; content: string }> }): Promise<{ draft: ExtractedCaseDraft; diagnostics: { provider: string; model: string; latencyMs: number; inputTokens: number; outputTokens: number } } | null> {
   const gateway = createConfiguredLlmGateway();
   if (gateway.getProviderName() === "mock") return null;

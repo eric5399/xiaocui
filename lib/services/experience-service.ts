@@ -8,6 +8,7 @@ import {
   generateExtractedCaseWithGateway,
   fusionAgent,
   interviewAgent,
+  reviseExtractedCaseWithGateway,
 } from "@/lib/agents";
 import {
   generateInviteCode,
@@ -15,6 +16,8 @@ import {
   type CreateFusionResult,
   type CreateScenarioInput,
   type CreateTaskInput,
+  type ExtractedCase,
+  type ReviewExtractedCasePayload,
   type SendInterviewMessageInput,
   type SendMessageResult,
   type StartInterviewInput,
@@ -22,6 +25,19 @@ import {
 import { ApiError } from "@/lib/api/errors";
 import { generateReferenceFilename, generateReferenceMarkdown } from "@/lib/reference/markdown-generator";
 import type { ExperienceRepository, InterviewFilters } from "@/lib/repository/experience-repository";
+
+function extractedCaseDraft(value: ExtractedCase) {
+  return {
+    title: value.title,
+    summary: value.summary,
+    background: value.background,
+    discovery: value.discovery,
+    judgement: value.judgement,
+    action: value.action,
+    result: value.result,
+    limitation: value.limitation,
+  };
+}
 
 function hasProfileValue(value: unknown): boolean {
   if (typeof value === "string") return value.trim().length > 0;
@@ -124,6 +140,9 @@ export class ExperienceService {
     if (missingRequiredFields.length > 0) {
       throw new ApiError(422, "PROFILE_FIELDS_MISSING", "请填写所有必填信息", missingRequiredFields);
     }
+    if (this.store.providerName === "supabase" && !input.privacyConsent) {
+      throw new ApiError(422, "PRIVACY_CONSENT_REQUIRED", "请先阅读并同意访谈资料处理说明");
+    }
 
     let challenge = input.challengeCaseId ? await this.store.getChallenge(input.challengeCaseId) : undefined;
     if (challenge && challenge.taskId !== task.id) {
@@ -132,7 +151,16 @@ export class ExperienceService {
     challenge ??= (await this.store.listChallengesForTask(task.id))[0];
     challenge ??= await this.generateChallenge(task.id);
 
-    const userProfile = await this.store.createUserProfile(task.id, input.profile);
+    const profile = input.privacyConsent
+      ? {
+          ...input.profile,
+          _privacyConsent: {
+            version: input.privacyConsentVersion ?? "pilot-v1",
+            acceptedAt: new Date().toISOString(),
+          },
+        }
+      : input.profile;
+    const userProfile = await this.store.createUserProfile(task.id, profile);
     let interview = await this.store.createInterview(task.id, userProfile.id, challenge.id, {});
     const agent = await interviewAgent.start({
       challengeTitle: challenge.title,
@@ -185,13 +213,36 @@ export class ExperienceService {
       const existingAssistantMessage = detail.messages.find(
         (message) => message.role === "assistant" && message.metadata.replyToClientMessageId === input.clientMessageId,
       ) ?? null;
-      const agent = await interviewAgent.start({
+      if (existingAssistantMessage) {
+        const agent = await interviewAgent.start({
+          challengeTitle: detail.challengeCase.title,
+          challengeDescription: detail.challengeCase.description,
+          extractionState: detail.extractionState,
+          conversationHistory: detail.messages,
+        });
+        return { interview: detail, userMessage: existingUserMessage, assistantMessage: existingAssistantMessage, agent };
+      }
+      const agent = await interviewAgent.reply({
         challengeTitle: detail.challengeCase.title,
         challengeDescription: detail.challengeCase.description,
         extractionState: detail.extractionState,
         conversationHistory: detail.messages,
+        userMessage: existingUserMessage.content,
       });
-      return { interview: detail, userMessage: existingUserMessage, assistantMessage: existingAssistantMessage, agent };
+      const interview = await this.store.updateInterviewState(detail.id, agent.extractionState) ?? detail;
+      const assistantMessage = await this.store.addMessage(detail.id, {
+        role: "assistant",
+        messageType: "text",
+        content: agent.nextQuestion ?? "这个案例基本聊清楚了，我帮你整理一下。",
+        audioUrl: null,
+        metadata: {
+          stage: agent.currentStage,
+          isComplete: agent.isComplete,
+          replyToClientMessageId: input.clientMessageId ?? null,
+          llm: agent.diagnostics ?? { provider: "mock", model: "deterministic-mock-v1", latencyMs: 0, inputTokens: 0, outputTokens: 0 },
+        },
+      });
+      return { interview, userMessage: existingUserMessage, assistantMessage, agent };
     }
 
     const userMessage = await this.store.addMessage(detail.id, {
@@ -214,7 +265,7 @@ export class ExperienceService {
       messageType: "text",
       content:
         agent.nextQuestion ??
-        "关键信息已经覆盖完整。你可以继续补充，或点击“提交访谈”生成个人经验案例。",
+        "这个案例基本聊清楚了，我帮你整理一下。",
       audioUrl: null,
       metadata: {
         stage: agent.currentStage,
@@ -231,8 +282,21 @@ export class ExperienceService {
     const detail = await this.store.getInterviewDetail(interviewId);
     if (!detail) throw new ApiError(404, "INTERVIEW_NOT_FOUND", "未找到对应访谈");
     if (detail.extractedCase && detail.experienceRules[0]) {
+      const extractionState = detail.extractionState.caseReview
+        ? detail.extractionState
+        : {
+            ...detail.extractionState,
+            caseReview: {
+              status: "ai_generated" as const,
+              originalCase: extractedCaseDraft(detail.extractedCase),
+              revisions: [],
+            },
+          };
+      const interview = detail.extractionState.caseReview
+        ? detail
+        : (await this.store.updateInterviewState(interviewId, extractionState)) ?? detail;
       return {
-        interview: detail,
+        interview,
         extractedCase: detail.extractedCase,
         experienceRule: detail.experienceRules[0],
       };
@@ -256,7 +320,101 @@ export class ExperienceService {
     const ruleDraft = buildExperienceRuleDraft(extractedDraft);
     const result = await this.store.saveExtraction(detail.id, extractedDraft, ruleDraft);
     if (!result) throw new ApiError(500, "EXTRACTION_SAVE_FAILED", "经验案例保存失败");
-    return result;
+    const extractionState = {
+      ...detail.extractionState,
+      generationStatus: "pending_review" as const,
+      caseReview: {
+        status: "ai_generated" as const,
+        originalCase: extractedCaseDraft(result.extractedCase),
+        revisions: [],
+      },
+    };
+    const interview = await this.store.updateInterviewState(interviewId, extractionState);
+    return { ...result, interview: interview ?? result.interview };
+  }
+
+  async reviewExtractedCase(interviewId: string, input: ReviewExtractedCasePayload) {
+    const detail = await this.store.getInterviewDetail(interviewId);
+    if (!detail) throw new ApiError(404, "INTERVIEW_NOT_FOUND", "未找到对应访谈");
+    if (detail.status !== "completed" || !detail.extractedCase || !detail.experienceRules[0]) {
+      throw new ApiError(409, "CASE_NOT_READY", "案例尚未生成，暂时无法确认");
+    }
+    const originalCase = detail.extractionState.caseReview?.originalCase ?? extractedCaseDraft(detail.extractedCase);
+    const now = new Date().toISOString();
+
+    if (input.action === "confirm") {
+      const status = detail.extractionState.caseReview?.status === "user_corrected"
+        ? "user_corrected" as const
+        : "user_confirmed" as const;
+      const extractionState = {
+        ...detail.extractionState,
+        caseReview: {
+          status,
+          originalCase,
+          revisions: detail.extractionState.caseReview?.revisions ?? [],
+          confirmedAt: now,
+        },
+      };
+      const result = await this.store.saveCaseReview(interviewId, { extractionState });
+      if (!result) throw new ApiError(500, "CASE_REVIEW_SAVE_FAILED", "案例确认保存失败");
+      return { ...result, reviewStatus: status, changedFields: [] };
+    }
+
+    const clientMessageId = input.clientMessageId ?? `case-correction-${randomBytes(10).toString("hex")}`;
+    const existingRevision = detail.extractionState.caseReview?.revisions?.find(
+      (revision) => revision.sourceMessageId === clientMessageId,
+    );
+    if (existingRevision) {
+      return {
+        interview: detail,
+        extractedCase: detail.extractedCase,
+        experienceRule: detail.experienceRules[0],
+        reviewStatus: "user_corrected" as const,
+        changedFields: existingRevision.changedFields,
+      };
+    }
+
+    let revised;
+    try {
+      revised = await reviseExtractedCaseWithGateway({
+        current: extractedCaseDraft(detail.extractedCase),
+        correction: input.correction,
+        messages: detail.messages,
+      });
+    } catch {
+      throw new ApiError(502, "CASE_CORRECTION_FAILED", "AI 暂时没有理解这次修正，原案例和对话均已保留");
+    }
+    const ruleDraft = buildExperienceRuleDraft(revised.draft);
+    const extractionState = {
+      ...detail.extractionState,
+      caseReview: {
+        status: "user_corrected" as const,
+        originalCase,
+        confirmedAt: undefined,
+        revisions: [
+          ...(detail.extractionState.caseReview?.revisions ?? []),
+          {
+            sourceMessageId: clientMessageId,
+            correction: input.correction,
+            changedFields: revised.changedFields,
+            createdAt: now,
+            generationMetadata: revised.diagnostics ?? undefined,
+          },
+        ],
+      },
+    };
+    const result = await this.store.saveCaseReview(interviewId, {
+      extractionState,
+      extractedDraft: revised.draft,
+      ruleDraft,
+      correctionMessage: {
+        content: input.correction,
+        clientMessageId,
+        changedFields: revised.changedFields,
+      },
+    });
+    if (!result) throw new ApiError(500, "CASE_REVIEW_SAVE_FAILED", "案例修正保存失败");
+    return { ...result, reviewStatus: "user_corrected" as const, changedFields: revised.changedFields };
   }
 
   async listInterviews(filters?: InterviewFilters) {

@@ -3,9 +3,11 @@
 import Link from "next/link";
 import { useRouter } from "next/navigation";
 import { useState, type FormEvent } from "react";
+import { INSTITUTIONS, institutionName, type InstitutionCode } from "@/lib/domain";
 import { createAdminScenario, createAdminTask } from "./admin-data-client";
 
 type WizardState = {
+  institutionCode: InstitutionCode | "";
   name: string;
   objective: string;
   participantFields: string[];
@@ -20,9 +22,10 @@ const INTERNAL_AGENT_PROMPT =
   "你是一名保险业务经验萃取专家。请围绕用户的判断依据、行动原因和边界条件追问，不提供业务答案，不虚构用户未提及的事实。";
 
 const EMPTY_FORM: WizardState = {
+  institutionCode: "",
   name: "",
   objective: "",
-  participantFields: ["姓名", "机构"],
+  participantFields: ["姓名"],
   challengeRule: "",
   dimensions: ["机会发现", "判断逻辑", "行动策略", "效果反馈", "边界条件"],
   keywords: [],
@@ -74,6 +77,7 @@ export function ScenarioWizard() {
   function validateCurrentStep() {
     const nextErrors: Record<string, string> = {};
     if (step === 1) {
+      if (!form.institutionCode) nextErrors.institutionCode = "请选择任务归属机构。";
       if (!form.name.trim()) nextErrors.name = "请填写任务名称。";
       if (!form.objective.trim()) nextErrors.objective = "请说明希望萃取的经验。";
       if (!form.participantFields.length) nextErrors.participantFields = "请至少保留一项参与者信息。";
@@ -118,6 +122,7 @@ export function ScenarioWizard() {
 
     try {
       const scenario = await createAdminScenario({
+        institutionCode: form.institutionCode,
         name: form.name.trim(),
         topic: "机构经验萃取",
         background: form.objective.trim(),
@@ -130,7 +135,7 @@ export function ScenarioWizard() {
           fieldName,
           fieldType: "text",
           options: [],
-          required: fieldName === "姓名" || fieldName === "机构",
+          required: fieldName === "姓名",
           sortOrder,
         })),
       });
@@ -161,7 +166,6 @@ export function ScenarioWizard() {
             <span aria-hidden="true">←</span> 返回任务列表
           </Link>
           <h1>新建萃取任务</h1>
-          <p>三步完成任务信息、案例设置与发布。</p>
         </div>
         <span className="admin-list-toolbar__count">机构数据库保存</span>
       </header>
@@ -212,6 +216,29 @@ export function ScenarioWizard() {
           <div className="admin-wizard-form__body">
             {step === 1 ? (
               <div className="admin-form-section">
+                <div className="admin-field">
+                  <label htmlFor="scenario-institution">归属机构</label>
+                  <p className="admin-field__hint">用于后台按全国或省级机构归集数据，业务员无需重复填写。</p>
+                  <select
+                    id="scenario-institution"
+                    className="admin-select"
+                    value={form.institutionCode}
+                    aria-invalid={Boolean(errors.institutionCode)}
+                    onChange={(event) => update("institutionCode", event.target.value as InstitutionCode | "")}
+                  >
+                    <option value="">请选择归属机构</option>
+                    <option value="000000">全国 · 000000</option>
+                    <optgroup label="省级行政区">
+                      {INSTITUTIONS.slice(1).map((institution) => (
+                        <option value={institution.code} key={institution.code}>
+                          {institution.name} · {institution.code}
+                        </option>
+                      ))}
+                    </optgroup>
+                  </select>
+                  {errors.institutionCode ? <p className="admin-field-error">{errors.institutionCode}</p> : null}
+                </div>
+
                 <div className="admin-field">
                   <label htmlFor="scenario-name">任务名称</label>
                   <input
@@ -401,6 +428,7 @@ export function ScenarioWizard() {
                   <div className="admin-publish-preview__copy">
                     <p className="admin-kicker">业务员参与入口</p>
                     <h3>发布后生成</h3>
+                    <p>{form.institutionCode ? `${institutionName(form.institutionCode)} · ${form.institutionCode}` : "尚未选择归属机构"}</p>
                     <p>保存任务后会生成独立邀请码；受控免登录链接可在任务详情中创建并仅显示一次。</p>
                   </div>
                   <div className="admin-publish-preview__shape" aria-hidden="true">

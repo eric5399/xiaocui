@@ -37,6 +37,17 @@ export type InterviewFilters = {
   status?: InterviewStatus;
 };
 
+export type SaveCaseReviewInput = {
+  extractionState: InterviewExtractionState;
+  extractedDraft?: ExtractedCaseDraft;
+  ruleDraft?: ExperienceRuleDraft;
+  correctionMessage?: {
+    content: string;
+    clientMessageId?: string;
+    changedFields: string[];
+  };
+};
+
 /**
  * The sole persistence boundary used by business services. Implementations may
  * be in-memory (demo) or PostgreSQL/Supabase (server-side persistence).
@@ -76,6 +87,10 @@ export interface ExperienceRepository {
     interviewId: string,
     extractedDraft: ExtractedCaseDraft,
     ruleDraft: ExperienceRuleDraft,
+  ): MaybePromise<CompleteInterviewResult | undefined>;
+  saveCaseReview(
+    interviewId: string,
+    input: SaveCaseReviewInput,
   ): MaybePromise<CompleteInterviewResult | undefined>;
   getFusionCaseInputs(interviewIds: string[]): MaybePromise<Array<{
     interviewId: string;

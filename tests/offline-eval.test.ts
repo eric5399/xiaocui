@@ -2,7 +2,7 @@ import { createHash } from "node:crypto";
 import { mkdir, readFile, writeFile } from "node:fs/promises";
 import path from "node:path";
 import { describe, expect, it } from "vitest";
-import { buildExperienceRuleDraft, buildExtractedCaseDraft, MockInterviewAgent } from "../lib/agents/interview-agent";
+import { buildExperienceRuleDraft, buildExtractedCaseDraft, isConciseUserFacingQuestion, MockInterviewAgent } from "../lib/agents/interview-agent";
 import type { InterviewStage } from "../lib/domain";
 
 const enabled = process.env.RUN_OFFLINE_EVAL === "1";
@@ -32,6 +32,21 @@ function includesSource(value: string, source: string) {
   return normalized.length > 4 && source.replace(/\s/g, "").includes(normalized.slice(0, Math.min(12, normalized.length)));
 }
 
+function legacyQuestion(stage: InterviewStage | "complete", answer: string) {
+  if (stage === "complete") return null;
+  const cleaned = answer.replace(/\s+/g, " ").trim();
+  const answerReference = cleaned
+    ? `你刚才提到“${cleaned.length <= 28 ? cleaned : `${cleaned.slice(0, 28)}…`}”。`
+    : "";
+  switch (stage) {
+    case "discovery": return `${answerReference}面对“${FIXED_CHALLENGE.title}”，你最先从哪个数据、客户反馈或现场信号发现问题？`;
+    case "judgement": return `${answerReference}是什么依据让你作出这个判断？当时排除了哪些其他可能？`;
+    case "action": return `${answerReference}基于这个判断，你会先做哪一步，具体找谁、怎么做，为什么按这个顺序？`;
+    case "result": return `${answerReference}你会用什么指标和时间窗口验证动作有效？如果是过往经历，结果有什么变化？`;
+    case "limitation": return `${answerReference}这套方法成立需要哪些前提？出现什么情况时不适用或必须换一种做法？`;
+  }
+}
+
 describe.skipIf(!enabled)("offline synthetic evaluation — engineering checks only", () => {
   it("evaluates Interview Agent and Case Generator without network or production data", async () => {
     process.env.LLM_PROVIDER = "mock";
@@ -49,25 +64,33 @@ describe.skipIf(!enabled)("offline synthetic evaluation — engineering checks o
       const caseNonEmpty = fields.filter((value) => value.trim().length > 0).length;
       const citedFields = [extracted.discovery, extracted.judgement, extracted.action, extracted.result, extracted.limitation].filter((value) => includesSource(value, sample.answer)).length;
       const repeated = Boolean(turn.nextQuestion && turn.nextQuestion === start.nextQuestion);
-      rows.push({ id: sample.id, quality: sample.quality, expectedStage: sample.expectedStage, actualStage: turn.currentStage, expectedCaptured: sample.expectedCaptured, captured, gapFollowUp: turn.currentStage === sample.expectedStage, noRepeatedQuestion: !repeated, completionCorrect: (sample.expectedStage === "complete") === turn.isComplete, case: { structureComplete: fields.length === 7, nonEmptyRate: caseNonEmpty / fields.length, sourceCitationRate: citedFields / 5, unsupportedFactFlag: false } });
+      const beforeQuestion = legacyQuestion(turn.currentStage, sample.answer);
+      rows.push({ id: sample.id, quality: sample.quality, expectedStage: sample.expectedStage, actualStage: turn.currentStage, expectedCaptured: sample.expectedCaptured, captured, gapFollowUp: turn.currentStage === sample.expectedStage, noRepeatedQuestion: !repeated, completionCorrect: (sample.expectedStage === "complete") === turn.isComplete, language: { beforeChars: beforeQuestion?.length ?? 0, afterChars: turn.nextQuestion?.length ?? 0, conciseSingleQuestion: turn.nextQuestion ? isConciseUserFacingQuestion(turn.nextQuestion) : true }, case: { structureComplete: fields.length === 7, nonEmptyRate: caseNonEmpty / fields.length, sourceCitationRate: citedFields / 5, unsupportedFactFlag: false } });
     }
     const count = rows.length;
     const metric = (key: string) => rows.filter((row) => row[key] === true).length / count;
+    const questionRows = rows.filter((row) => (row.language as { beforeChars: number }).beforeChars > 0);
+    const average = (key: "beforeChars" | "afterChars") => questionRows.reduce((sum, row) => sum + (row.language as Record<typeof key, number>)[key], 0) / questionRows.length;
+    const beforeAverageChars = average("beforeChars");
+    const afterAverageChars = average("afterChars");
     const report = {
       reportType: "离线工程检查（非准确率评测）", generatedAt: new Date().toISOString(),
       dataset: { version: SAMPLE_VERSION, syntheticOnly: true, sampleCount: count, fixedChallenge: FIXED_CHALLENGE.title },
       runtime: { provider: "mock", model: "deterministic-mock-v1", temperature: 0, prompt: "prompts/interview-agent.md", promptSha256_12: promptHash },
       interview: { gapFollowUpRate: metric("gapFollowUp"), noRepeatedQuestionRate: metric("noRepeatedQuestion"), completionDecisionRate: metric("completionCorrect"), fiveDimensionCoverageRate: rows.filter((row) => Array.isArray(row.captured) && row.captured.length === 5).length / count },
+      languageOutput: { beforeAverageChars, afterAverageChars, characterReductionRate: 1 - afterAverageChars / beforeAverageChars, conciseSingleQuestionRate: questionRows.filter((row) => (row.language as { conciseSingleQuestion: boolean }).conciseSingleQuestion).length / questionRows.length },
       caseGenerator: { structureCompleteRate: rows.filter((row) => (row.case as { structureComplete: boolean }).structureComplete).length / count, fieldNonEmptyRate: rows.reduce((sum, row) => sum + (row.case as { nonEmptyRate: number }).nonEmptyRate, 0) / count, sourceCitationRate: rows.reduce((sum, row) => sum + (row.case as { sourceCitationRate: number }).sourceCitationRate, 0) / count, unsupportedFactFlags: 0 },
       limitations: ["无人工标注金标；所有指标都是工程检查，不代表准确率、业务正确性或模型能力。", "Mock Agent 使用确定性规则，不代表真实模型输出表现。"], rows,
     };
     await mkdir(path.join(process.cwd(), "reports"), { recursive: true });
     await writeFile(path.join(process.cwd(), "reports/offline-eval-report.json"), `${JSON.stringify(report, null, 2)}\n`);
-    await writeFile(path.join(process.cwd(), "reports/offline-eval-report.md"), `# 离线工程检查报告\n\n- 样本：${SAMPLE_VERSION}（${count} 组，全部合成）\n- Provider / Model：mock / deterministic-mock-v1\n- Prompt：prompts/interview-agent.md（SHA-256 前12位：${promptHash}）\n- 温度：0\n\n> 本报告不是准确率评测；没有人工金标，只检查工程约束。\n\n| 检查项 | 结果 |\n| --- | ---: |\n| 围绕缺口追问 | ${(report.interview.gapFollowUpRate * 100).toFixed(1)}% |\n| 不重复提问 | ${(report.interview.noRepeatedQuestionRate * 100).toFixed(1)}% |\n| 完成状态判断 | ${(report.interview.completionDecisionRate * 100).toFixed(1)}% |\n| 五维覆盖 | ${(report.interview.fiveDimensionCoverageRate * 100).toFixed(1)}% |\n| 案例结构完整 | ${(report.caseGenerator.structureCompleteRate * 100).toFixed(1)}% |\n| 案例字段非空 | ${(report.caseGenerator.fieldNonEmptyRate * 100).toFixed(1)}% |\n| 原始内容引用 | ${(report.caseGenerator.sourceCitationRate * 100).toFixed(1)}% |\n| 无依据事实标记 | ${report.caseGenerator.unsupportedFactFlags} |\n`);
+    await writeFile(path.join(process.cwd(), "reports/offline-eval-report.md"), `# 离线工程检查报告\n\n- 样本：${SAMPLE_VERSION}（${count} 组，全部合成）\n- Provider / Model：mock / deterministic-mock-v1\n- Prompt：prompts/interview-agent.md（SHA-256 前12位：${promptHash}）\n- 温度：0\n\n> 本报告不是准确率评测；没有人工金标，只检查工程约束。\n\n| 检查项 | 结果 |\n| --- | ---: |\n| 优化前平均问句长度 | ${report.languageOutput.beforeAverageChars.toFixed(1)} 字 |\n| 优化后平均问句长度 | ${report.languageOutput.afterAverageChars.toFixed(1)} 字 |\n| 用户可见文字减少 | ${(report.languageOutput.characterReductionRate * 100).toFixed(1)}% |\n| 单轮单问题合规 | ${(report.languageOutput.conciseSingleQuestionRate * 100).toFixed(1)}% |\n| 围绕缺口追问 | ${(report.interview.gapFollowUpRate * 100).toFixed(1)}% |\n| 不重复提问 | ${(report.interview.noRepeatedQuestionRate * 100).toFixed(1)}% |\n| 完成状态判断 | ${(report.interview.completionDecisionRate * 100).toFixed(1)}% |\n| 五维覆盖 | ${(report.interview.fiveDimensionCoverageRate * 100).toFixed(1)}% |\n| 案例结构完整 | ${(report.caseGenerator.structureCompleteRate * 100).toFixed(1)}% |\n| 案例字段非空 | ${(report.caseGenerator.fieldNonEmptyRate * 100).toFixed(1)}% |\n| 原始内容引用 | ${(report.caseGenerator.sourceCitationRate * 100).toFixed(1)}% |\n| 无依据事实标记 | ${report.caseGenerator.unsupportedFactFlags} |\n`);
     expect(count).toBeGreaterThanOrEqual(10);
     // This is an evaluation report, not a golden-accuracy gate. Keep the
     // measured rate visible while only guarding against a total regression.
     expect(report.interview.noRepeatedQuestionRate).toBeGreaterThanOrEqual(0.8);
+    expect(report.languageOutput.characterReductionRate).toBeGreaterThan(0.25);
+    expect(report.languageOutput.conciseSingleQuestionRate).toBe(1);
     expect(report.caseGenerator.structureCompleteRate).toBe(1);
     expect(buildExperienceRuleDraft(buildExtractedCaseDraft(FIXED_CHALLENGE.title, FIXED_CHALLENGE.description, {})).strategy).toBeTruthy();
   });

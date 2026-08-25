@@ -22,7 +22,12 @@ export class SpeechService {
   async transcribe(transcriptId: string, mockText?: string) {
     const job = await this.repository.getTranscript(transcriptId);
     if (!job) throw new ApiError(404, "TRANSCRIPT_NOT_FOUND", "未找到对应转写任务");
-    if (job.status === "completed" || job.status === "transcribing") return this.response(job);
+    if (job.status === "completed") return this.response(job);
+    if (job.status === "transcribing") {
+      const elapsedMs = Date.now() - new Date(job.updatedAt).getTime();
+      if (Number.isFinite(elapsedMs) && elapsedMs < 150_000) return this.response(job);
+      await this.repository.updateTranscript(job.id, { status: "failed", errorCode: "SPEECH_STALLED" });
+    }
     if (job.status === "expired") throw new ApiError(410, "TRANSCRIPT_EXPIRED", "录音已过期并不可再转写");
     const current = await this.repository.updateTranscript(job.id, { status: "transcribing", errorCode: null });
     if (!current) throw new ApiError(404, "TRANSCRIPT_NOT_FOUND", "未找到对应转写任务");

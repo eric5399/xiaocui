@@ -4,7 +4,8 @@ import { IflytekRealtimeLlmProvider, MockSpeechProvider, SpeechAdapter } from ".
 
 class FakeIflytekSocket {
   private readonly listeners = new Map<string, Array<(event: unknown) => void>>();
-  constructor(_url: string) {
+  constructor(url: string) {
+    void url;
     setTimeout(() => this.emit("message", { data: JSON.stringify({ msg_type: "action", data: { action: "started", sessionId: "test-session" } }) }), 0);
   }
   addEventListener(type: string, listener: (event: unknown) => void) { this.listeners.set(type, [...(this.listeners.get(type) ?? []), listener]); }

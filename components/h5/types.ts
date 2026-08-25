@@ -22,7 +22,7 @@ export type ParticipantProfile = {
   role: string;
   years: string;
   networkCount: string;
-};
+} & Record<string, string>;
 
 export type ChatMessage = {
   id: string;
@@ -62,6 +62,8 @@ export type H5Progress = {
   apiInterviewId: string | null;
   apiChallenge: ApiChallengeSummary | null;
   apiExtractedCase: ApiExtractedCaseSummary | null;
+  caseReviewStatus: "ai_generated" | "user_confirmed" | "user_corrected";
+  caseReviewConfirmed: boolean;
   apiSyncState: "local" | "syncing" | "synced" | "failed";
   apiError: string | null;
 };

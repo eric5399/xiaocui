@@ -2,6 +2,8 @@ import { z } from "zod";
 import { route } from "@/lib/api/response";
 import { getRequestSpeechService } from "@/lib/security/request-service";
 
+export const maxDuration = 150;
+
 const schema = z.object({ transcriptId: z.uuid(), mockText: z.string().trim().max(10000).optional() });
 
 export async function POST(request: Request) {

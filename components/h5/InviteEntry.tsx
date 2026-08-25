@@ -7,15 +7,15 @@ import {
   getResumePath,
   isDemoInviteCode,
 } from "./mock-data";
-import { H5Frame, MockNotice } from "./H5Frame";
+import { H5Frame } from "./H5Frame";
 import { useH5Progress } from "./use-h5-progress";
 import styles from "./h5.module.css";
 
-export function InviteEntry() {
+export function InviteEntry({ demoMode }: { demoMode: boolean }) {
   const router = useRouter();
   const errorId = useId();
   const helpId = useId();
-  const [inviteCode, setInviteCode] = useState(DEMO_INVITE_CODE);
+  const [inviteCode, setInviteCode] = useState(demoMode ? DEMO_INVITE_CODE : "");
   const [error, setError] = useState("");
   const { progress, ready } = useH5Progress(DEMO_INVITE_CODE);
 
@@ -24,7 +24,7 @@ export function InviteEntry() {
     const normalized = inviteCode.trim().toUpperCase();
 
     if (!isDemoInviteCode(normalized)) {
-      setError(`演示环境中请使用邀请码 ${DEMO_INVITE_CODE}`);
+      setError(`请输入有效的邀请码（当前体验码：${DEMO_INVITE_CODE}）`);
       return;
     }
 
@@ -38,7 +38,7 @@ export function InviteEntry() {
         <p className={styles.eyebrow}>参与入口</p>
         <h1>分享你的业务判断</h1>
         <p className={styles.lead}>
-          通过一个模拟业务案例，与 AI 陪练复盘你的发现、判断和动作。
+          通过一个业务案例，与访谈助手复盘你的发现、判断和动作。
         </p>
       </section>
 
@@ -51,7 +51,7 @@ export function InviteEntry() {
           </div>
         </div>
 
-        <form className={styles.formStack} onSubmit={submitInvite} noValidate>
+        {demoMode ? <form className={styles.formStack} onSubmit={submitInvite} noValidate>
           <div className={styles.fieldGroup}>
             <label htmlFor="invite-code">任务邀请码</label>
             <input
@@ -70,7 +70,7 @@ export function InviteEntry() {
               maxLength={12}
             />
             <p id={helpId} className={styles.fieldHelp}>
-              演示邀请码已预填：{DEMO_INVITE_CODE}
+              体验码已预填：{DEMO_INVITE_CODE}
             </p>
             {error && (
               <p id={errorId} className={styles.fieldError} role="alert">
@@ -81,11 +81,8 @@ export function InviteEntry() {
           <button className={styles.primaryButton} type="submit">
             {ready && progress.status !== "new" ? "继续上次进度" : "查看任务"}
           </button>
-        </form>
+        </form> : <p className={styles.fieldHelp}>请通过管理员发送给你的专属任务链接或二维码进入。该链接仅限本人使用，请不要转发。</p>}
 
-        <MockNotice>
-          本站为 MVP 演示环境；不会连接真实保险业务数据。
-        </MockNotice>
       </section>
 
     </H5Frame>

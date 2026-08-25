@@ -15,7 +15,7 @@ export const taskMock = {
 } as const;
 
 export const challengeMock = {
-  label: "演示挑战案例",
+  label: "业务案例",
   title: "成熟 4S 店续保成交转弱",
   description:
     "某 4S 店与公司合作 3 年。最近三个月，续保率由 72% 降至 58%，报价率基本稳定，报价成交率下降 15%。同期，竞品增加了驻店活动。",
@@ -55,8 +55,7 @@ export const initialAgentMessage: ChatMessage = {
   role: "agent",
   target: "judgement",
   createdAt: "",
-  content:
-    "请先说说你的初步判断。除了竞品活动，你还会优先排查哪些因素？",
+  content: "除了竞品活动，你最先会排查哪个因素？",
 };
 
 const promptByDimension: Record<
@@ -64,34 +63,24 @@ const promptByDimension: Record<
   { missing: string; partial: string }
 > = {
   discovery: {
-    missing:
-      "回到问题最初，你通常会从哪个信号发现这类异常？是看数据，还是来自网点的现场反馈？",
-    partial:
-      "你提到了异常信号。能再具体一些吗：多长时间的变化会让你认为需要介入？",
+    missing: "你最先看到的哪个信号，让你确定需要介入？",
+    partial: "多长时间的变化，会让你判断异常已经需要介入？",
   },
   judgement: {
-    missing:
-      "你会如何区分是客户流量、销售推荐，还是竞品导致的问题？",
-    partial:
-      "你刚才给出了一个判断。哪些数据或现场信息能够验证它？也请说说你排除的另一种可能。",
+    missing: "哪个关键依据能帮你区分客户流量、销售推荐和竞品影响？",
+    partial: "什么证据最能验证这个判断，而不是另一种可能？",
   },
   action: {
-    missing:
-      "如果完成验证后证明成交环节确实转弱，你会采取的第一个动作是什么？",
-    partial:
-      "为什么先做这个动作，而不是立即做价格或激励调整？请说说执行顺序。",
+    missing: "确认成交环节转弱后，你会先做哪一步，为什么？",
+    partial: "为什么把这一步放在最前面，而不是先调整价格或激励？",
   },
   result: {
-    missing:
-      "你会用什么结果来判断动作有效？多久复盘一次？",
-    partial:
-      "除了续保率，还有哪个过程指标能更早地证明方法正在起效？",
+    missing: "哪个结果变化最能证明这套做法有效？",
+    partial: "哪个过程指标能比续保率更早反映效果？",
   },
   boundary: {
-    missing:
-      "这套方法在什么条件下不适用？实际执行中最需要避免的误判是什么？",
-    partial:
-      "你已经提到了一个边界。如果网点尚未形成稳定客户池，这套方法需要如何调整？",
+    missing: "出现什么情况时，这套方法会失效？",
+    partial: "客户池还不稳定时，你会怎么调整这套方法？",
   },
 };
 
@@ -124,6 +113,8 @@ export function createInitialProgress(inviteCode: string): H5Progress {
     apiInterviewId: null,
     apiChallenge: null,
     apiExtractedCase: null,
+    caseReviewStatus: "ai_generated",
+    caseReviewConfirmed: false,
     apiSyncState: "local",
     apiError: null,
   };
@@ -139,7 +130,9 @@ export function getResumePath(progress: H5Progress) {
     case "profile":
       return `${base}/profile`;
     case "challenge":
-      return `${base}/challenge`;
+      // The challenge is still created and used by the interview agent, but it
+      // no longer needs a separate participant-facing confirmation page.
+      return `${base}/interview`;
     case "interview":
       return `${base}/interview`;
     case "submitted":
@@ -183,8 +176,7 @@ export function getNextQuestion(coverage: InterviewCoverage) {
   if (!incomplete) {
     return {
       target: "boundary" as const,
-      content:
-        "这次复盘的五个方面已经基本覆盖。请用一句话总结：面对这类网点，你最想提醒同事不要跳过哪一步？",
+      content: "最后，如果只提醒同事一件事，你最希望他别跳过哪一步？",
     };
   }
 

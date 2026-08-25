@@ -1,196 +1,117 @@
 "use client";
 
-import { FormEvent, useEffect, useRef, useState } from "react";
+import { FormEvent, type ChangeEvent, useEffect, useRef, useState } from "react";
 import { useRouter } from "next/navigation";
-import { H5Frame, LoadingPanel } from "./H5Frame";
-import { useH5Progress } from "./use-h5-progress";
+import { H5Frame, InvalidInvite, LoadingPanel } from "./H5Frame";
 import { emptyCoverage } from "./mock-data";
-import {
-  mapApiStage,
-  mergeApiCoverage,
-  type ApiInformationState,
-} from "./api-contract";
+import { useH5Progress } from "./use-h5-progress";
+import { mapApiStage, mergeApiCoverage, type ApiInformationState } from "./api-contract";
 import type { ParticipantProfile } from "./types";
 import styles from "./h5.module.css";
-import { participantHeaders } from "./auth-client";
+import { ensureAnonymousSession, participantHeaders } from "./auth-client";
 
-type ProfileErrors = Partial<Record<keyof ParticipantProfile, string>>;
-type TaskLookupPayload = { data?: { id: string }; error?: { message?: string } };
-type StartInterviewPayload = {
-  data?: {
-    interview: { id: string };
-    challengeCase: { title: string; description: string };
-    assistantMessage: { id: string; content: string; createdAt: string };
-    agent: { currentStage: string; informationState: ApiInformationState };
-  };
-  error?: { message?: string };
-};
+type CustomField = { id: string; fieldName: string; fieldType: "text" | "number" | "select"; options: string[]; required: boolean; sortOrder: number };
+type TaskLookupPayload = { data?: { id: string; scenario: { name: string; objective: string; customFields: CustomField[] } }; error?: { message?: string } };
+type StartInterviewPayload = { data?: { interview: { id: string }; challengeCase: { title: string; description: string }; assistantMessage: { id: string; content: string; createdAt: string }; agent: { currentStage: string; informationState: ApiInformationState } }; error?: { message?: string } };
+type ProfileErrors = Record<string, string | undefined>;
 
-function profilesMatch(left: ParticipantProfile, right: ParticipantProfile) {
-  return (Object.keys(left) as Array<keyof ParticipantProfile>).every(
-    (key) => left[key] === right[key],
-  );
+const legacyProfileKeys: Record<string, keyof ParticipantProfile> = { 姓名: "name", 机构: "organization", 岗位: "role", 从业年限: "years", 网点数量: "networkCount" };
+
+function profileValue(profile: ParticipantProfile, fieldName: string) {
+  return profile[fieldName] ?? profile[legacyProfileKeys[fieldName]] ?? "";
+}
+
+function updateProfileValue(profile: ParticipantProfile, fieldName: string, value: string): ParticipantProfile {
+  const legacyKey = legacyProfileKeys[fieldName];
+  return { ...profile, [fieldName]: value, ...(legacyKey ? { [legacyKey]: value } : {}) };
+}
+
+function profilePayload(profile: ParticipantProfile, fields: CustomField[]) {
+  return Object.fromEntries(fields.map((field) => [field.fieldName, profileValue(profile, field.fieldName).trim()]).filter(([, value]) => value.length > 0));
 }
 
 export function ProfileForm({ inviteCode }: { inviteCode: string }) {
   const router = useRouter();
   const { progress, ready, updateProgress } = useH5Progress(inviteCode);
+  const [task, setTask] = useState<TaskLookupPayload["data"]>();
+  const [loadError, setLoadError] = useState("");
 
   useEffect(() => {
     if (!ready) return;
-    if (!progress.privacyAccepted) {
-      router.replace(`/t/${inviteCode}`);
-    }
-  }, [inviteCode, progress.privacyAccepted, ready, router]);
+    let active = true;
+    void (async () => {
+      try {
+        await ensureAnonymousSession();
+        const response = await fetch(`/api/tasks/by-invite/${encodeURIComponent(inviteCode)}`, { cache: "no-store", headers: await participantHeaders() });
+        const payload = (await response.json()) as TaskLookupPayload;
+        if (!response.ok || !payload.data) throw new Error(payload.error?.message || "未找到对应任务");
+        if (active) setTask(payload.data);
+      } catch (error) {
+        if (active) setLoadError(error instanceof Error ? error.message : "无法进入任务");
+      }
+    })();
+    return () => { active = false; };
+  }, [inviteCode, ready]);
 
-  if (!ready || !progress.privacyAccepted) {
-    return (
-      <H5Frame activeStep={1} backHref={`/t/${inviteCode}`}>
-        <LoadingPanel />
-      </H5Frame>
-    );
-  }
+  useEffect(() => {
+    if (!ready || !progress.apiInterviewId) return;
+    router.replace(`/t/${inviteCode}/interview`);
+  }, [inviteCode, progress.apiInterviewId, ready, router]);
 
-  return (
-    <ProfileFormFields
-      inviteCode={inviteCode}
-      initialProfile={progress.profile}
-      existingInterviewId={progress.apiInterviewId}
-      updateProgress={updateProgress}
-    />
-  );
+  if (!ready) return <H5Frame quietHeader><LoadingPanel /></H5Frame>;
+  if (loadError) return <InvalidInvite inviteCode={inviteCode} />;
+  if (!task) return <H5Frame quietHeader><LoadingPanel label="正在准备任务" /></H5Frame>;
+  return <ProfileFormFields inviteCode={inviteCode} task={task} initialProfile={progress.profile} privacyAccepted={progress.privacyAccepted} existingInterviewId={progress.apiInterviewId} updateProgress={updateProgress} />;
 }
 
-function ProfileFormFields({
-  inviteCode,
-  initialProfile,
-  existingInterviewId,
-  updateProgress,
-}: {
-  inviteCode: string;
-  initialProfile: ParticipantProfile;
-  existingInterviewId: string | null;
-  updateProgress: ReturnType<typeof useH5Progress>["updateProgress"];
-}) {
+function ProfileFormFields({ inviteCode, task, initialProfile, privacyAccepted, existingInterviewId, updateProgress }: { inviteCode: string; task: NonNullable<TaskLookupPayload["data"]>; initialProfile: ParticipantProfile; privacyAccepted: boolean; existingInterviewId: string | null; updateProgress: ReturnType<typeof useH5Progress>["updateProgress"] }) {
   const router = useRouter();
-  const [profile, setProfile] = useState<ParticipantProfile>(initialProfile);
+  const [profile, setProfile] = useState(initialProfile);
+  const [showSupplementary, setShowSupplementary] = useState(false);
   const [errors, setErrors] = useState<ProfileErrors>({});
   const [syncState, setSyncState] = useState<"idle" | "syncing" | "failed">("idle");
   const [syncError, setSyncError] = useState("");
+  const [privacyError, setPrivacyError] = useState("");
   const submitLockRef = useRef(false);
+  const fields = [...task.scenario.customFields].sort((left, right) => left.sortOrder - right.sortOrder);
+  const requiredFields = fields.filter((field) => field.required);
+  const supplementaryFields = fields.filter((field) => !field.required);
 
-  function updateField(field: keyof ParticipantProfile, value: string) {
-    setProfile((current) => ({ ...current, [field]: value }));
-    if (errors[field]) {
-      setErrors((current) => ({ ...current, [field]: undefined }));
-    }
-  }
-
-  function continueLocally() {
-    updateProgress({
-      profile,
-      status: "challenge",
-      apiInterviewId: null,
-      apiChallenge: null,
-      apiExtractedCase: null,
-      messages: [],
-      coverage: { ...emptyCoverage },
-      draft: "",
-      completedAt: null,
-      apiSyncState: "failed",
-      apiError: syncError || "服务端暂时不可用",
-    });
-    router.push(`/t/${inviteCode}/challenge`);
+  function updateField(fieldName: string, value: string) {
+    setProfile((current) => updateProfileValue(current, fieldName, value));
+    if (errors[fieldName]) setErrors((current) => ({ ...current, [fieldName]: undefined }));
   }
 
   async function submitProfile(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
     if (submitLockRef.current) return;
     const nextErrors: ProfileErrors = {};
-
-    if (!profile.name.trim()) nextErrors.name = "请填写姓名";
-    if (!profile.organization.trim())
-      nextErrors.organization = "请填写所属机构";
-    if (!profile.years) nextErrors.years = "请选择从业年限";
-
+    for (const field of requiredFields) if (!profileValue(profile, field.fieldName).trim()) nextErrors[field.fieldName] = `请填写${field.fieldName}`;
     if (Object.keys(nextErrors).length > 0) {
       setErrors(nextErrors);
-      const firstInvalid = Object.keys(nextErrors)[0];
-      document.getElementById(firstInvalid)?.focus();
+      document.getElementById(fields.find((field) => nextErrors[field.fieldName])?.id ?? "")?.focus();
       return;
     }
-
-    if (existingInterviewId && profilesMatch(profile, initialProfile)) {
-      updateProgress({ status: "challenge" });
-      router.push(`/t/${inviteCode}/challenge`);
+    if (!privacyAccepted) {
+      setPrivacyError("请先阅读并同意访谈资料处理说明");
       return;
     }
-
+    if (existingInterviewId) {
+      updateProgress({ profile, status: "interview" });
+      router.push(`/t/${inviteCode}/interview`);
+      return;
+    }
     submitLockRef.current = true;
     setSyncState("syncing");
     setSyncError("");
-    updateProgress({ apiSyncState: "syncing", apiError: null });
-
+    updateProgress({ profile, apiSyncState: "syncing", apiError: null });
     try {
-      const taskResponse = await fetch(
-        `/api/tasks/by-invite/${encodeURIComponent(inviteCode)}`,
-        { cache: "no-store", headers: await participantHeaders() },
-      );
-      const taskPayload = (await taskResponse.json()) as TaskLookupPayload;
-      if (!taskResponse.ok || !taskPayload.data?.id) {
-        throw new Error(taskPayload.error?.message || "未找到对应的演示任务");
-      }
-
-      const startResponse = await fetch("/api/interviews/start", {
-        method: "POST",
-        headers: await participantHeaders({ "Content-Type": "application/json" }),
-        body: JSON.stringify({
-          taskId: taskPayload.data.id,
-          profile: {
-            姓名: profile.name.trim(),
-            机构: profile.organization.trim(),
-            从业年限: profile.years,
-          },
-        }),
-      });
+      const startResponse = await fetch("/api/interviews/start", { method: "POST", headers: await participantHeaders({ "Content-Type": "application/json" }), body: JSON.stringify({ taskId: task.id, profile: profilePayload(profile, fields), privacyConsent: true, privacyConsentVersion: "pilot-v1" }) });
       const startPayload = (await startResponse.json()) as StartInterviewPayload;
-      if (
-        !startResponse.ok ||
-        !startPayload.data?.interview.id ||
-        !startPayload.data.assistantMessage
-      ) {
-        throw new Error(startPayload.error?.message || "访谈创建失败");
-      }
-
+      if (!startResponse.ok || !startPayload.data?.interview.id || !startPayload.data.assistantMessage) throw new Error(startPayload.error?.message || "访谈创建失败");
       const started = startPayload.data;
-      updateProgress({
-        profile,
-        status: "challenge",
-        messages: [
-          {
-            id: started.assistantMessage.id,
-            role: "agent",
-            target: mapApiStage(started.agent.currentStage),
-            content: started.assistantMessage.content,
-            createdAt: started.assistantMessage.createdAt,
-          },
-        ],
-        coverage: mergeApiCoverage(
-          { ...emptyCoverage },
-          started.agent.informationState,
-        ),
-        draft: "",
-        completedAt: null,
-        apiInterviewId: started.interview.id,
-        apiChallenge: {
-          title: started.challengeCase.title,
-          description: started.challengeCase.description,
-        },
-        apiExtractedCase: null,
-        apiSyncState: "synced",
-        apiError: null,
-      });
-      router.push(`/t/${inviteCode}/challenge`);
+      updateProgress({ profile, status: "interview", messages: [{ id: started.assistantMessage.id, role: "agent", target: mapApiStage(started.agent.currentStage), content: started.assistantMessage.content, createdAt: started.assistantMessage.createdAt }], coverage: mergeApiCoverage({ ...emptyCoverage }, started.agent.informationState), draft: "", completedAt: null, apiInterviewId: started.interview.id, apiChallenge: { title: started.challengeCase.title, description: started.challengeCase.description }, apiExtractedCase: null, caseReviewStatus: "ai_generated", caseReviewConfirmed: false, apiSyncState: "synced", apiError: null });
+      router.push(`/t/${inviteCode}/interview`);
     } catch (error) {
       const message = error instanceof Error ? error.message : "服务端暂时不可用";
       setSyncState("failed");
@@ -200,142 +121,26 @@ function ProfileFormFields({
     }
   }
 
-  return (
-    <H5Frame
-      activeStep={1}
-      backHref={syncState === "syncing" ? undefined : `/t/${inviteCode}`}
-    >
-      <section className={styles.formPage}>
-        <div className={styles.pageHeading}>
-          <p className={styles.eyebrow}>参与者背景</p>
-          <h1>先认识一下你</h1>
-          <p>
-            这些信息帮助系统理解你的业务上下文，不用于绩效评估。
-          </p>
-        </div>
+  function renderField(field: CustomField) {
+    const value = profileValue(profile, field.fieldName);
+    const error = errors[field.fieldName];
+    const common = { id: field.id, name: field.fieldName, value, disabled: syncState === "syncing", "aria-invalid": Boolean(error), "aria-describedby": error ? `${field.id}-error` : undefined, onChange: (event: ChangeEvent<HTMLInputElement | HTMLSelectElement>) => updateField(field.fieldName, event.target.value) };
+    return <div className={styles.fieldGroup} key={field.id}>
+      <label htmlFor={field.id}>{field.fieldName}{field.required && <span>必填</span>}</label>
+      {field.fieldType === "select" ? <select {...common}><option value="">请选择</option>{field.options.map((option) => <option value={option} key={option}>{option}</option>)}</select> : <input {...common} type={field.fieldType === "number" ? "number" : "text"} inputMode={field.fieldType === "number" ? "numeric" : undefined} autoComplete={field.fieldName === "姓名" ? "name" : undefined} />}
+      {error && <p id={`${field.id}-error`} className={styles.fieldError} role="alert">{error}</p>}
+    </div>;
+  }
 
-        <form
-          className={styles.profileForm}
-          onSubmit={submitProfile}
-          aria-busy={syncState === "syncing"}
-          noValidate
-        >
-          <div className={styles.fieldGroup}>
-            <label htmlFor="name">
-              姓名 <span>必填</span>
-            </label>
-            <input
-              id="name"
-              name="name"
-              value={profile.name}
-              onChange={(event) => updateField("name", event.target.value)}
-              placeholder="例如：林晓岚"
-              autoComplete="name"
-              disabled={syncState === "syncing"}
-              aria-invalid={Boolean(errors.name)}
-              aria-describedby={errors.name ? "name-error" : undefined}
-            />
-            {errors.name && (
-              <p id="name-error" className={styles.fieldError} role="alert">
-                {errors.name}
-              </p>
-            )}
-          </div>
-
-          <div className={styles.fieldGroup}>
-            <label htmlFor="organization">
-              所属机构 <span>必填</span>
-            </label>
-            <input
-              id="organization"
-              name="organization"
-              value={profile.organization}
-              onChange={(event) =>
-                updateField("organization", event.target.value)
-              }
-              placeholder="例如：华东分公司"
-              autoComplete="organization"
-              disabled={syncState === "syncing"}
-              aria-invalid={Boolean(errors.organization)}
-              aria-describedby={
-                errors.organization ? "organization-error" : undefined
-              }
-            />
-            {errors.organization && (
-              <p
-                id="organization-error"
-                className={styles.fieldError}
-                role="alert"
-              >
-                {errors.organization}
-              </p>
-            )}
-          </div>
-
-          <div className={styles.fieldGroup}>
-              <label htmlFor="years">
-                从业年限 <span>必填</span>
-              </label>
-              <select
-                id="years"
-                name="years"
-                value={profile.years}
-                disabled={syncState === "syncing"}
-                onChange={(event) => updateField("years", event.target.value)}
-                aria-invalid={Boolean(errors.years)}
-                aria-describedby={errors.years ? "years-error" : undefined}
-              >
-                <option value="">请选择</option>
-                <option value="1年以内">1 年以内</option>
-                <option value="1–3年">1–3 年</option>
-                <option value="4–7年">4–7 年</option>
-                <option value="8年及以上">8 年及以上</option>
-              </select>
-              {errors.years && (
-                <p id="years-error" className={styles.fieldError} role="alert">
-                  {errors.years}
-                </p>
-              )}
-          </div>
-
-          <div className={styles.formFootnote}>
-            <span aria-hidden="true">i</span>
-            <p>你填写的信息仅用于本次演示访谈，我们会为你保密，不用于绩效评估。</p>
-          </div>
-
-          <div aria-live="polite">
-            {syncState === "failed" && (
-              <div className={styles.formFootnote} role="alert">
-                <span aria-hidden="true">!</span>
-                <p>{syncError}。你可以重试，或继续使用纯本地演示。</p>
-              </div>
-            )}
-          </div>
-
-          <button
-            className={styles.primaryButton}
-            type="submit"
-            disabled={syncState === "syncing"}
-          >
-            {syncState === "syncing"
-              ? "正在创建访谈…"
-              : existingInterviewId && profilesMatch(profile, initialProfile)
-                ? "返回案例"
-                : syncState === "failed"
-                  ? "重试创建访谈"
-                  : "保存并查看案例"}
-          </button>
-          {syncState === "failed" && (
-            <button
-              className={styles.secondaryButton}
-              type="button"
-              onClick={continueLocally}
-            >
-              继续本地演示
-            </button>
-          )}
-        </form>
-      </section>
-    </H5Frame>
-  );
+  return <H5Frame quietHeader><section className={styles.formPage}>
+    <div className={styles.pageHeading}><h1>{task.scenario.name}</h1><p>{task.scenario.objective}</p></div>
+    <form className={styles.profileForm} onSubmit={submitProfile} aria-busy={syncState === "syncing"} noValidate>
+      {requiredFields.map(renderField)}
+      {supplementaryFields.length > 0 && <div className={styles.supplementaryFields}><button className={styles.supplementaryToggle} type="button" onClick={() => setShowSupplementary((current) => !current)} aria-expanded={showSupplementary}>补充信息 <span aria-hidden="true">{showSupplementary ? "−" : "+"}</span></button>{showSupplementary && <div className={styles.supplementaryList}>{supplementaryFields.map(renderField)}</div>}</div>}
+      <label className={styles.consentRow}><input type="checkbox" checked={privacyAccepted} onChange={(event) => { updateProgress({ privacyAccepted: event.target.checked }); setPrivacyError(""); }} disabled={syncState === "syncing"} /><span>我已阅读并同意：访谈资料用于经验萃取；录音仅在我主动使用语音回答时采集和转写，可改用文字回答。</span></label>
+      {privacyError && <p className={styles.fieldError} role="alert">{privacyError}</p>}
+      {syncState === "failed" && <p className={styles.fieldError} role="alert">{syncError}，请重试。</p>}
+      <button className={styles.primaryButton} type="submit" disabled={syncState === "syncing"}>{syncState === "syncing" ? "正在进入对话…" : syncState === "failed" ? "重试进入对话" : "开始聊聊"}</button>
+    </form>
+  </section></H5Frame>;
 }

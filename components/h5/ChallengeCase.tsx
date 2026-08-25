@@ -3,7 +3,7 @@
 import { useEffect } from "react";
 import { useRouter } from "next/navigation";
 import { challengeMock } from "./mock-data";
-import { H5Frame, LoadingPanel, MockNotice } from "./H5Frame";
+import { H5Frame, LoadingPanel } from "./H5Frame";
 import { useH5Progress } from "./use-h5-progress";
 import styles from "./h5.module.css";
 
@@ -50,10 +50,6 @@ export function ChallengeCase({ inviteCode }: { inviteCode: string }) {
           <span className={styles.caseNumber}>CASE 01</span>
         </header>
 
-        <MockNotice>
-          由预置规则生成的演示案例，人物与数据模拟真实场景。
-        </MockNotice>
-
         <section className={styles.caseNarrative} aria-labelledby="case-context">
           <div className={styles.caseSectionLabel}>
             <span>01</span>
@@ -91,7 +87,7 @@ export function ChallengeCase({ inviteCode }: { inviteCode: string }) {
             <p className={styles.eyebrow}>请你分析</p>
             <h2 id="challenge-title">{challengeMock.question}</h2>
             <p>
-              不必追求标准答案。AI 陪练会根据你的第一反应继续追问。
+              不必追求标准答案。访谈助手会根据你的第一反应继续追问。
             </p>
           </div>
         </section>

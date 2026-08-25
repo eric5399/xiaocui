@@ -1,3 +1,5 @@
+import type { InstitutionCode } from "./institutions";
+
 export type JsonPrimitive = string | number | boolean | null;
 export type JsonValue = JsonPrimitive | JsonValue[] | { [key: string]: JsonValue };
 export type JsonObject = { [key: string]: JsonValue };
@@ -22,6 +24,8 @@ export interface CaseTemplate {
 
 export interface Scenario {
   id: string;
+  /** Business reporting dimension selected by the sole platform administrator. */
+  institutionCode: InstitutionCode | null;
   name: string;
   topic: string;
   background: string;
@@ -110,6 +114,27 @@ export interface InterviewExtractionState {
   generationStatus?: "pending_review" | "failed";
   generationError?: string;
   generationMetadata?: { provider: string; model: string; latencyMs: number; inputTokens: number; outputTokens: number };
+  caseReview?: {
+    status: "ai_generated" | "user_confirmed" | "user_corrected";
+    originalCase: {
+      title: string;
+      summary: string;
+      background: string;
+      discovery: string;
+      judgement: string;
+      action: string;
+      result: string;
+      limitation: string;
+    };
+    confirmedAt?: string;
+    revisions?: Array<{
+      sourceMessageId: string;
+      correction: string;
+      changedFields: string[];
+      createdAt: string;
+      generationMetadata?: { provider: string; model: string; latencyMs: number; inputTokens: number; outputTokens: number };
+    }>;
+  };
 }
 
 export type InformationState = Record<InterviewStage, InformationStatus>;
@@ -257,6 +282,7 @@ export interface DashboardStats {
 }
 
 export interface CreateScenarioInput {
+  institutionCode?: InstitutionCode;
   name: string;
   topic: string;
   background: string;
@@ -286,6 +312,9 @@ export interface StartInterviewInput {
   taskId: string;
   profile: JsonObject;
   challengeCaseId?: string;
+  /** Required in Supabase mode before any participant profile is persisted. */
+  privacyConsent?: boolean;
+  privacyConsentVersion?: string;
 }
 
 export interface SendInterviewMessageInput {

@@ -1,5 +1,6 @@
 import type { Metadata } from "next";
 import { InviteEntry } from "@/components/h5/InviteEntry";
+import { getDataProviderStatus } from "@/lib/repository/provider";
 
 export const metadata: Metadata = {
   title: "参与任务",
@@ -7,5 +8,5 @@ export const metadata: Metadata = {
 };
 
 export default function JoinPage() {
-  return <InviteEntry />;
+  return <InviteEntry demoMode={getDataProviderStatus().provider === "mock"} />;
 }

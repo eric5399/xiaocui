@@ -2,8 +2,6 @@ import Link from "next/link";
 import type { ReactNode } from "react";
 import styles from "./h5.module.css";
 
-const flowSteps = ["看任务", "填信息", "读案例", "对话访谈"];
-
 type H5FrameProps = {
   children: ReactNode;
   activeStep?: number;
@@ -14,10 +12,8 @@ type H5FrameProps = {
 
 export function H5Frame({
   children,
-  activeStep,
   backHref,
   backLabel = "返回",
-  quietHeader = false,
 }: H5FrameProps) {
   return (
     <div className={styles.viewport}>
@@ -42,42 +38,10 @@ export function H5Frame({
                 </span>
               </div>
             )}
-            {!quietHeader && <DemoBadge />}
           </div>
-          {typeof activeStep === "number" && (
-            <ol className={styles.flowSteps} aria-label="任务进度">
-              {flowSteps.map((step, index) => {
-                const state =
-                  index < activeStep
-                    ? "complete"
-                    : index === activeStep
-                      ? "current"
-                      : "upcoming";
-                return (
-                  <li key={step} data-state={state}>
-                    <span aria-hidden="true">{index + 1}</span>
-                    <small>{step}</small>
-                  </li>
-                );
-              })}
-            </ol>
-          )}
         </header>
         {children}
       </main>
-    </div>
-  );
-}
-
-export function DemoBadge() {
-  return <span className={styles.demoBadge}>演示环境</span>;
-}
-
-export function MockNotice({ children }: { children: ReactNode }) {
-  return (
-    <div className={styles.mockNotice} role="note">
-      <span aria-hidden="true">i</span>
-      <p>{children}</p>
     </div>
   );
 }

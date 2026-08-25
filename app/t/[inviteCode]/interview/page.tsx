@@ -2,7 +2,7 @@ import type { Metadata } from "next";
 import { InterviewRoom } from "@/components/h5/InterviewRoom";
 
 export const metadata: Metadata = {
-  title: "AI 陪练访谈",
+  title: "AI访谈",
 };
 
 export default async function InterviewPage({

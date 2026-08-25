@@ -32,6 +32,52 @@ function excerpt(answer: string, length = 28): string {
   return cleaned.length <= length ? cleaned : `${cleaned.slice(0, length)}…`;
 }
 
+const USER_FACING_FORBIDDEN_TERMS = [
+  "completeness",
+  "missing_fields",
+  "missing fields",
+  "informationState",
+  "extractionState",
+  "state",
+  "insight score",
+  "valuable insights",
+  "challenge case",
+  "schema",
+  "prompt",
+  "当前阶段",
+  "完整度",
+  "缺失字段",
+  "状态机",
+  "洞察评分",
+  "挑战案例",
+  "提示词",
+];
+
+function normalizedQuestion(value: string): string {
+  return value.replace(/\s+/g, " ").trim();
+}
+
+/** Guards only the H5 language layer; interview decisions remain deterministic. */
+export function isConciseUserFacingQuestion(value: string): boolean {
+  const question = normalizedQuestion(value);
+  const questionMarks = question.match(/[？?]/g)?.length ?? 0;
+  const sentenceCount = question
+    .split(/[。！？!?]+/)
+    .map((sentence) => sentence.trim())
+    .filter(Boolean).length;
+  return Boolean(
+    question &&
+      question.length <= 120 &&
+      questionMarks === 1 &&
+      sentenceCount <= 3 &&
+      !/[\r\n]/.test(value) &&
+      !/(^|\s)(?:\d+[.、]|[-*])\s*/.test(value) &&
+      !USER_FACING_FORBIDDEN_TERMS.some((term) =>
+        question.toLowerCase().includes(term.toLowerCase()),
+      ),
+  );
+}
+
 export function getInformationState(state: InterviewExtractionState): InformationState {
   return Object.fromEntries(
     INTERVIEW_STAGES.map((stage) => [stage, state[stage]?.trim() ? "captured" : "missing"]),
@@ -78,19 +124,27 @@ function buildQuestion(
   stage: InterviewStage,
   input: Pick<InterviewAgentInput, "challengeTitle" | "extractionState" | "userMessage">,
 ): string {
-  const answerReference = input.userMessage ? `你刚才提到“${excerpt(input.userMessage)}”。` : "";
+  const bridge = input.userMessage
+    ? {
+        discovery: "",
+        judgement: "这个异常信号值得继续追。",
+        action: "判断依据清楚了。",
+        result: "动作路径明确了。",
+        limitation: "结果有了，最后确认一下边界。",
+      }[stage]
+    : "";
 
   switch (stage) {
     case "discovery":
-      return `${answerReference}面对“${input.challengeTitle}”，你最先从哪个数据、客户反馈或现场信号发现问题？`;
+      return `${bridge}最先出现的哪个信号，让你确定这个问题值得介入？`;
     case "judgement":
-      return `${answerReference}是什么依据让你作出这个判断？当时排除了哪些其他可能？`;
+      return `${bridge}哪个关键依据让你相信这个判断，而不是另一种可能？`;
     case "action":
-      return `${answerReference}基于这个判断，你会先做哪一步，具体找谁、怎么做，为什么按这个顺序？`;
+      return `${bridge}基于这个判断，你会把哪一步放在最前面，为什么？`;
     case "result":
-      return `${answerReference}你会用什么指标和时间窗口验证动作有效？如果是过往经历，结果有什么变化？`;
+      return `${bridge}最终哪个结果变化让你确认这套做法有效？`;
     case "limitation":
-      return `${answerReference}这套方法成立需要哪些前提？出现什么情况时不适用或必须换一种做法？`;
+      return `${bridge}出现什么情况时，这套方法会失效，必须换一种做法？`;
   }
 }
 
@@ -153,12 +207,13 @@ export class GatewayInterviewAgent implements InterviewAgent {
     const history = input.conversationHistory.slice(-12).map(({ role, content }) => ({ role, content: content.slice(0, 1200) }));
     const { data, response } = await gateway.generateStructured(interviewReplySchema, {
       messages: [
-        { role: "system", content: `${prompt}\n仅输出 JSON。只能针对 currentStage 追问一次；不得重复历史 assistant 问题；不得输出个人姓名或机构。` },
+        { role: "system", content: `${prompt}\n仅输出 JSON。nextQuestion 是给 H5 用户看的语言层：用简短承接加一个核心问题，控制在 1 到 3 句话且只能有一个问号；不得列出多个问题，不得机械复述，不得重复历史 assistant 问题，不得输出个人姓名、机构或任何内部状态。` },
         { role: "user", content: JSON.stringify({ challenge: { title: input.challengeTitle, description: input.challengeDescription }, currentStage: deterministic.currentStage, informationState: deterministic.informationState, conversationHistory: history, lastAnswer: input.userMessage ?? null }) },
       ], temperature: Number(process.env.LLM_TEMPERATURE ?? 0.3), maxTokens: 700,
     });
-    const alreadyAsked = new Set(input.conversationHistory.filter((message) => message.role === "assistant").map((message) => message.content.replace(/\s+/g, " ").trim()));
-    const safeQuestion = data.shouldContinue && data.nextQuestion && !alreadyAsked.has(data.nextQuestion.replace(/\s+/g, " ").trim()) ? data.nextQuestion : deterministic.nextQuestion;
+    const alreadyAsked = new Set(input.conversationHistory.filter((message) => message.role === "assistant").map((message) => normalizedQuestion(message.content)));
+    const candidate = data.nextQuestion ? normalizedQuestion(data.nextQuestion) : null;
+    const safeQuestion = data.shouldContinue && candidate && isConciseUserFacingQuestion(candidate) && !alreadyAsked.has(candidate) ? candidate : deterministic.nextQuestion;
     return { ...deterministic, nextQuestion: safeQuestion, shouldContinue: !deterministic.isComplete, reason: data.reason, diagnostics: { provider: response.provider, model: response.model, latencyMs: response.latencyMs, inputTokens: response.usage.inputTokens, outputTokens: response.usage.outputTokens } };
   }
 }

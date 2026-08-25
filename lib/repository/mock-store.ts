@@ -31,7 +31,7 @@ import type {
   ExtractedCaseDraft,
   GeneratedChallengeCase,
 } from "@/lib/agents/contracts";
-import type { ExperienceRepository } from "./experience-repository";
+import type { ExperienceRepository, SaveCaseReviewInput } from "./experience-repository";
 
 interface StoreState {
   scenarios: Scenario[];
@@ -56,6 +56,7 @@ const BASE_DATE = "2026-08-20T02:00:00.000Z";
 function seedState(): StoreState {
   const scenario: Scenario = {
     id: SCENARIO_ID,
+    institutionCode: "000000",
     name: "车险续保异常经验萃取",
     topic: "如何诊断并改善合作网点续保率异常",
     background: "某区域合作网点近期续保率持续下降，总部希望识别一线优秀人员的诊断与行动经验。",
@@ -287,6 +288,7 @@ export class MockExperienceStore implements ExperienceRepository {
     const timestamp = new Date().toISOString();
     const scenario: Scenario = {
       id: crypto.randomUUID(),
+      institutionCode: input.institutionCode ?? "000000",
       name: input.name,
       topic: input.topic,
       background: input.background,
@@ -590,6 +592,41 @@ export class MockExperienceStore implements ExperienceRepository {
       extractedCase: clone(extractedCase),
       experienceRule: clone(experienceRule),
     };
+  }
+
+  saveCaseReview(interviewId: string, input: SaveCaseReviewInput): CompleteInterviewResult | undefined {
+    const interview = this.state.interviews.find((item) => item.id === interviewId);
+    const extractedCase = this.state.extractedCases.find((item) => item.interviewId === interviewId);
+    const experienceRule = extractedCase && this.state.experienceRules.find((item) => item.extractedCaseId === extractedCase.id);
+    if (!interview || interview.status !== "completed" || !extractedCase || !experienceRule) return undefined;
+
+    const timestamp = new Date().toISOString();
+    if (input.correctionMessage) {
+      const duplicate = input.correctionMessage.clientMessageId && this.state.messages.some(
+        (message) => message.interviewId === interviewId && message.metadata.clientMessageId === input.correctionMessage?.clientMessageId,
+      );
+      if (!duplicate) {
+        this.state.messages.push({
+          id: crypto.randomUUID(),
+          interviewId,
+          role: "user",
+          messageType: "text",
+          content: input.correctionMessage.content,
+          audioUrl: null,
+          metadata: {
+            source: "case_correction",
+            changedFields: input.correctionMessage.changedFields,
+            clientMessageId: input.correctionMessage.clientMessageId ?? null,
+          },
+          createdAt: timestamp,
+        });
+      }
+    }
+    if (input.extractedDraft) Object.assign(extractedCase, clone(input.extractedDraft), { updatedAt: timestamp });
+    if (input.ruleDraft) Object.assign(experienceRule, clone(input.ruleDraft));
+    interview.extractionState = clone(input.extractionState);
+    interview.updatedAt = timestamp;
+    return { interview: clone(interview), extractedCase: clone(extractedCase), experienceRule: clone(experienceRule) };
   }
 
   getFusionCaseInputs(interviewIds: string[]) {

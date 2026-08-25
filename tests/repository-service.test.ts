@@ -91,4 +91,131 @@ describe("data provider and repository contract", () => {
       }),
     ).rejects.toMatchObject({ code: "FUSION_SCENARIO_MISMATCH" });
   });
+
+  it("允许中途直接整理，但不降低 Schema 或伪造缺失经验", async () => {
+    const store = new MockExperienceStore();
+    const service = new ExperienceService(store);
+    const task = (await service.listTasks())[0];
+    const started = await service.startInterview({
+      taskId: task.id,
+      profile: { 姓名: "中途退出用户", 机构: "测试机构" },
+    });
+    const turn = await service.sendMessage({
+      interviewId: started.interview.id,
+      content: "我先从报价到成交的漏斗数据里发现了异常。",
+      clientMessageId: `partial-${started.interview.id}`,
+    });
+    expect(turn.agent.isComplete).toBe(false);
+
+    const completed = await service.completeInterview(started.interview.id);
+    expect(completed.interview.status).toBe("completed");
+    expect(completed.extractedCase.discovery).toContain("漏斗数据");
+    expect(completed.extractedCase.judgement).toContain("本次访谈未形成足够证据");
+    expect(completed.extractedCase.action).toContain("本次访谈未形成足够证据");
+    expect(completed.extractedCase.result).toContain("本次访谈未形成足够证据");
+    expect(completed.extractedCase.limitation).toContain("本次访谈未形成足够证据");
+    expect(completed.experienceRule.limitation).toBe(completed.extractedCase.limitation);
+  });
+
+  it("用户可用自然语言修正 Case，同步 Rule 且不覆盖原始访谈", async () => {
+    const store = new MockExperienceStore();
+    const service = new ExperienceService(store);
+    const task = (await service.listTasks())[0];
+    const started = await service.startInterview({
+      taskId: task.id,
+      profile: { 姓名: "案例确认用户", 机构: "测试机构" },
+    });
+    await service.sendMessage({
+      interviewId: started.interview.id,
+      content: "我从漏斗数据发现异常，因为报价率没变判断是竞品影响，先回访客户并沟通，最终成交率回升；如果报价率也下降则不适用。",
+      clientMessageId: `full-${started.interview.id}`,
+    });
+    const beforeMessages = await store.listMessages(started.interview.id);
+    const completed = await service.completeInterview(started.interview.id);
+    const originalCase = { ...completed.extractedCase };
+    const correction = "不是因为竞争对手降价，是因为销售顾问不愿意推。";
+
+    const corrected = await service.reviewExtractedCase(started.interview.id, {
+      action: "correct",
+      correction,
+      clientMessageId: "case-correction-trace-1",
+    });
+    expect(corrected.reviewStatus).toBe("user_corrected");
+    expect(corrected.extractedCase.judgement).toBe(correction);
+    expect(corrected.extractedCase.summary).toContain(correction.replace(/。$/, ""));
+    expect(corrected.experienceRule.judgement).toBe(correction);
+    expect(corrected.extractedCase.action).toBe(originalCase.action);
+    expect(corrected.extractedCase.result).toBe(originalCase.result);
+    expect(corrected.extractedCase.limitation).toBe(originalCase.limitation);
+    expect(Object.keys(corrected.extractedCase)).toEqual(expect.arrayContaining([
+      "title", "summary", "background", "discovery", "judgement", "action", "result", "limitation",
+    ]));
+
+    const detail = await service.getInterviewDetail(started.interview.id);
+    expect(detail.messages.slice(0, beforeMessages.length)).toEqual(beforeMessages);
+    expect(detail.messages).toHaveLength(beforeMessages.length + 1);
+    expect(detail.messages.at(-1)).toMatchObject({
+      role: "user",
+      content: correction,
+      metadata: { source: "case_correction", clientMessageId: "case-correction-trace-1" },
+    });
+    expect(detail.extractionState.caseReview?.originalCase.judgement).toBe(originalCase.judgement);
+    expect(detail.extractionState.caseReview?.revisions?.[0]).toMatchObject({
+      sourceMessageId: "case-correction-trace-1",
+      correction,
+    });
+
+    await service.reviewExtractedCase(started.interview.id, {
+      action: "correct",
+      correction,
+      clientMessageId: "case-correction-trace-1",
+    });
+    expect(await store.listMessages(started.interview.id)).toHaveLength(beforeMessages.length + 1);
+
+    const confirmed = await service.reviewExtractedCase(started.interview.id, { action: "confirm" });
+    expect(confirmed.reviewStatus).toBe("user_corrected");
+    expect(confirmed.interview.extractionState.caseReview?.confirmedAt).toBeTruthy();
+  });
+
+  it("回归 PC 配置 → H5 访谈 → Case/Rule → 用户确认 → 融合/Reference 完整链路", async () => {
+    const store = new MockExperienceStore();
+    const service = new ExperienceService(store);
+    const scenario = await service.createScenario({
+      ...BASE_SCENARIO_INPUT,
+      name: "第五轮端到端回归",
+      outputSchema: { sections: ["background", "discovery", "judgement", "action", "result", "limitation"] },
+      customFields: [
+        { fieldName: "姓名", fieldType: "text", options: [], required: true, sortOrder: 0 },
+        { fieldName: "补充信息", fieldType: "text", options: [], required: false, sortOrder: 1 },
+      ],
+    });
+    const task = await service.createTask({ scenarioId: scenario.id, status: "active" });
+    const completedIds: string[] = [];
+    for (const suffix of ["甲", "乙"]) {
+      const started = await service.startInterview({ taskId: task.id, profile: { 姓名: `业务员${suffix}`, 补充信息: "保留动态字段" } });
+      await service.sendMessage({
+        interviewId: started.interview.id,
+        content: `我从续保漏斗数据发现${suffix}类异常，因为报价率没变判断是推荐意愿下降；我先回访客户并跟进顾问，结果成交率回升；如果报价率同步下降则不适用。`,
+        clientMessageId: `e2e-${suffix}-${started.interview.id}`,
+      });
+      const completed = await service.completeInterview(started.interview.id);
+      expect(Object.values(completed.extractedCase).filter((value) => typeof value === "string").every(Boolean)).toBe(true);
+      expect(Object.values(completed.experienceRule).filter((value) => typeof value === "string").every(Boolean)).toBe(true);
+      await service.reviewExtractedCase(started.interview.id, { action: "confirm" });
+      completedIds.push(started.interview.id);
+    }
+
+    const configured = await store.getScenario(scenario.id);
+    expect(configured?.customFields.map((field) => field.fieldName)).toEqual(["姓名", "补充信息"]);
+    const pcDetail = await service.getInterviewDetail(completedIds[0]);
+    expect(pcDetail.messages.length).toBeGreaterThanOrEqual(3);
+    expect(pcDetail.extractedCase).not.toBeNull();
+    expect(pcDetail.experienceRules).toHaveLength(1);
+    expect(pcDetail.extractionState.caseReview?.status).toBe("user_confirmed");
+
+    const fusion = await service.createFusion({ scenarioId: scenario.id, interviewIds: completedIds });
+    const reference = await service.getReference(fusion.fusionJob.id);
+    expect(fusion.fusionJob.status).toBe("completed");
+    expect(reference.markdownContent).toContain("## 经验来源");
+  });
 });

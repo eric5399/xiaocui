@@ -2,7 +2,7 @@ import type { Metadata } from "next";
 import { CompletionSummary } from "@/components/h5/CompletionSummary";
 
 export const metadata: Metadata = {
-  title: "访谈已提交",
+  title: "案例确认",
 };
 
 export default async function CompletePage({
